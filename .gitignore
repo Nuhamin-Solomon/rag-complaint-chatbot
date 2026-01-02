@@ -1,0 +1,17 @@
+# Python virtual environment
+venv/
+
+# Python cache
+__pycache__/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Environment variables
+.env
+
+# Raw data and vector stores (large files)
+data/raw/*
+vector_store/*
+data/processed/*.csv
+data/processed/*.parquet

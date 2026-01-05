@@ -1,0 +1,6 @@
+pandas
+matplotlib
+sentence-transformers
+langchain
+chromadb
+streamlit

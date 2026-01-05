@@ -1,81 +1,88 @@
-"""
-Task 2: Sampling, Chunking, Embedding, Vector Store Creation
-"""
-
+import os
 import pandas as pd
-from sentence_transformers import SentenceTransformer
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-import chromadb
+import numpy as np
+import faiss
+
 from pathlib import Path
+from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
 
+# -------------------
+# Paths
+# -------------------
 DATA_PATH = Path("data/processed/filtered_complaints.csv")
-VECTOR_DIR = Path("vector_store")
+VECTOR_STORE_DIR = Path("vector_store")
+VECTOR_STORE_DIR.mkdir(exist_ok=True)
 
-# ---------------------------
-# Load cleaned data
-# ---------------------------
-df = pd.read_csv(DATA_PATH)
+INDEX_PATH = VECTOR_STORE_DIR / "faiss.index"
+METADATA_PATH = VECTOR_STORE_DIR / "metadata.csv"
 
-# ---------------------------
-# Stratified sampling (10k–15k)
-# ---------------------------
-sampled_df = (
-    df.groupby("Product", group_keys=False)
-      .apply(lambda x: x.sample(min(len(x), 3000), random_state=42))
-)
+# -------------------
+# Parameters
+# -------------------
+SAMPLE_SIZE = 2000
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 100
 
-print(f"Sampled complaints: {len(sampled_df)}")
+# -------------------
+# Helper: chunk text
+# -------------------
+def chunk_text(text, chunk_size=500, overlap=100):
+    words = text.split()
+    chunks = []
 
-# ---------------------------
-# Chunking
-# ---------------------------
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=50
-)
+    start = 0
+    while start < len(words):
+        end = start + chunk_size
+        chunk = words[start:end]
+        chunks.append(" ".join(chunk))
+        start = end - overlap
 
-documents = []
-metadatas = []
+    return chunks
 
-for _, row in sampled_df.iterrows():
-    chunks = splitter.split_text(row["cleaned_narrative"])
-    for i, chunk in enumerate(chunks):
-        documents.append(chunk)
-        metadatas.append({
-            "complaint_id": row.get("Complaint ID"),
-            "product": row["Product"],
-            "issue": row.get("Issue"),
-            "sub_issue": row.get("Sub-issue"),
-            "chunk_index": i
-        })
+# -------------------
+# Main
+# -------------------
+def main():
+    print("📥 Loading dataset...")
+    df = pd.read_csv(DATA_PATH)
 
-print(f"Generated {len(documents)} chunks")
+    df = df.dropna(subset=["cleaned_narrative"])
+    df = df.sample(SAMPLE_SIZE, random_state=42)
 
-# ---------------------------
-# Embeddings
-# ---------------------------
-model = SentenceTransformer("all-MiniLM-L6-v2")
-embeddings = model.encode(documents, show_progress_bar=True)
+    all_chunks = []
+    all_metadata = []
 
-# ---------------------------
-# Vector store (ChromaDB)
-# ---------------------------
-VECTOR_DIR.mkdir(exist_ok=True)
+    print("✂️ Chunking narratives...")
+    for _, row in tqdm(df.iterrows(), total=len(df)):
+        chunks = chunk_text(row["cleaned_narrative"])
 
-client = chromadb.Client(
-    settings=chromadb.Settings(
-        persist_directory=str(VECTOR_DIR)
+        for chunk in chunks:
+            all_chunks.append(chunk)
+            all_metadata.append({
+                "product": row["Product"]
+            })
+
+    print("🧠 Loading embedding model...")
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+
+    print("🔢 Creating embeddings...")
+    embeddings = model.encode(
+        all_chunks,
+        show_progress_bar=True,
+        convert_to_numpy=True
     )
-)
 
-collection = client.get_or_create_collection("complaints")
+    print("📦 Building FAISS index...")
+    dim = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dim)
+    index.add(embeddings)
 
-collection.add(
-    documents=documents,
-    embeddings=embeddings.tolist(),
-    metadatas=metadatas,
-    ids=[str(i) for i in range(len(documents))]
-)
+    print("💾 Saving vector store...")
+    faiss.write_index(index, str(INDEX_PATH))
+    pd.DataFrame(all_metadata).to_csv(METADATA_PATH, index=False)
 
-client.persist()
-print("Vector store persisted to vector_store/")
+    print("✅ Task 2 complete: vector store created")
+
+if __name__ == "__main__":
+    main()
